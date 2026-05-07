@@ -14,10 +14,30 @@ extension NSToolbarItem.Identifier {
     static let inspector = NSToolbarItem.Identifier("Inspector")
     static let share = NSToolbarItem.Identifier("Share")
     static let search = NSToolbarItem.Identifier("Search")
+    /// Custom traffic lights toolbar item. Hosts `TrafficLightsView` (its own
+    /// glass capsule); `isBordered=false` suppresses the macOS 26 auto-pill so
+    /// only the inner glass renders. Sits in the toolbar's natural flow, so
+    /// adjacent items (sidebar toggle etc.) get the regular item-to-item
+    /// spacing, not a 90pt spacer gap.
+    static let customTrafficLights = NSToolbarItem.Identifier("CustomTrafficLights")
+    /// Replaces the standard `.toggleSidebar` identifier. AppKit treats the
+    /// built-in one as **navigational** and places it in the leading title
+    /// area outside the normal item flow, where it would collide with the
+    /// custom traffic lights. A plain delegate-created item lays out as a
+    /// normal item and gets the auto Liquid Glass pill.
+    static let customSidebarToggle = NSToolbarItem.Identifier("CustomSidebarToggle")
 }
 
 @main
-class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharingServicePickerToolbarItemDelegate, NSSearchFieldDelegate {
+class AppDelegate: NSObject,
+                   NSApplicationDelegate,
+                   NSToolbarDelegate,
+                   NSSharingServicePickerToolbarItemDelegate,
+                   NSSearchFieldDelegate,
+                   NSMenuItemValidation {
+
+    private static let searchPinReason = "search-focus"
+    private static let bannerPinReason = "access-banner"
 
     @IBOutlet var window: NSWindow!
 
@@ -44,6 +64,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
     private var searchMode: SearchMode = .contains
     private var pendingFindWork: DispatchWorkItem?
     private static let findDebounceDelay: TimeInterval = 0.10
+    private var chromeController: WindowChromeController?
+    private var fileDropController: FileDropController?
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
@@ -55,20 +77,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
     }
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-        window.styleMask.insert(.fullSizeContentView)
-        window.contentViewController = MainSplitViewController()
+        window.contentViewController = ContainerViewController()
         window.setContentSize(NSSize(width: 1100, height: 720))
         window.center()
         window.setFrameAutosaveName("MainWindow")
 
-        let toolbar = NSToolbar(identifier: "MainToolbar")
+        // Identifier bumped on each default-item-list change so any persisted
+        // item order from previous launches is discarded and the new default
+        // takes effect on first run.
+        let toolbar = NSToolbar(identifier: "MainToolbarV6")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
+        toolbar.autosavesConfiguration = false
         window.toolbar = toolbar
         window.toolbarStyle = .automatic
 
         installFindBar()
         installAccessBanner()
+        chromeController = WindowChromeController(window: window)
+
+        let drop = FileDropController(window: window)
+        drop.onDropFile = { [weak self] url in self?.present(url: url) }
+        fileDropController = drop
 
         hasLaunched = true
 
@@ -155,8 +185,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            .flexibleSpace,
-            .toggleSidebar,
+            .customTrafficLights,
+            .customSidebarToggle,
             .sidebarTrackingSeparator,
             .openWith,
             .flexibleSpace,
@@ -168,7 +198,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            .toggleSidebar,
+            .customTrafficLights,
+            .customSidebarToggle,
             .sidebarTrackingSeparator,
             .flexibleSpace,
             .space,
@@ -183,6 +214,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
                  itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
+        case .customTrafficLights: return makeTrafficLightsItem()
+        case .customSidebarToggle: return makeSidebarToggleItem()
         case .openWith: return makeOpenWithItem()
         case .inspector: return makeInspectorItem()
         case .share: return makeShareItem()
@@ -233,6 +266,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
         return item
     }
 
+    /// Empty toolbar item that matches the width of the traffic-lights overlay
+    /// so the next real toolbar item never collides with the custom circles.
+    /// Without this, NSToolbar reclaims the leading space normally reserved
+    /// for the (now-hidden) standard window buttons and pushes its first item
+    /// flush against the window's left edge, right under the traffic lights.
+    /// Custom traffic-lights toolbar item: hosts `TrafficLightsView` directly
+    /// (its own ultra-thin material capsule + colored circles). `isBordered =
+    /// false` suppresses macOS 26's auto Liquid Glass pill so only our inner
+    /// glass renders — no double-pill, no "fat" auto-styling.
+    private func makeTrafficLightsItem() -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: .customTrafficLights)
+        item.label = ""
+        item.paletteLabel = "Window Controls"
+        item.isBordered = false
+
+        let view = TrafficLightsView()
+        view.onClose = { [weak self] in self?.window?.performClose(nil) }
+        view.onMinimize = { [weak self] in self?.window?.performMiniaturize(nil) }
+        view.onZoom = { [weak self] in self?.window?.toggleFullScreen(nil) }
+        item.view = view
+        return item
+    }
+
+    /// Canonical image+action toolbar item that replaces `.toggleSidebar`.
+    /// Using `image` (not a custom view) lets macOS 26's auto Liquid Glass
+    /// pill wrap it like any standard item. Action routes through the
+    /// responder chain to `NSSplitViewController.toggleSidebar(_:)`.
+    private func makeSidebarToggleItem() -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: .customSidebarToggle)
+        item.label = "Sidebar"
+        item.paletteLabel = "Sidebar"
+        item.toolTip = "Show or hide sidebar"
+        let image = NSImage(systemSymbolName: "sidebar.leading",
+                            accessibilityDescription: "Toggle Sidebar") ?? NSImage()
+        image.isTemplate = true
+        item.image = image
+        item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+        item.target = nil  // walks responder chain
+        return item
+    }
+
     private func inspectorImage() -> NSImage {
         let image = NSImage(systemSymbolName: "info",
                             accessibilityDescription: "Inspector") ?? NSImage()
@@ -241,13 +315,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
     }
 
     @objc private func toggleInspectorAction(_ sender: Any) {
-        let isVisible = (window.contentViewController as? MainSplitViewController)?
+        let isVisible = (window.contentViewController as? ContainerViewController)?.splitViewController
             .toggleInspector() ?? false
         setInspectorToggleSelected(isVisible)
     }
 
+    /// Menu hook (`View → Show Inspector`, ⌘⌥I) — routes through the responder
+    /// chain so it works regardless of which sub-view has focus.
+    @IBAction func toggleInspector(_ sender: Any?) {
+        toggleInspectorAction(sender ?? self)
+    }
+
+    /// Validate menu items targeting AppDelegate. AppKit calls this for every
+    /// menu update; we use it to flip "Show Inspector" ↔ "Hide Inspector" the
+    /// way `toggleSidebar:` does automatically via NSSplitViewController.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleInspector(_:)) {
+            let visible = (window.contentViewController as? ContainerViewController)?.splitViewController
+                .isInspectorVisible ?? false
+            menuItem.title = visible ? "Hide Inspector" : "Show Inspector"
+            return true
+        }
+        return true
+    }
+
     private func refreshInspectorToggleItem() {
-        let isVisible = (window.contentViewController as? MainSplitViewController)?
+        let isVisible = (window.contentViewController as? ContainerViewController)?.splitViewController
             .isInspectorVisible ?? false
         setInspectorToggleSelected(isVisible)
     }
@@ -276,6 +369,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
         return item
     }
 
+    // MARK: - NSSearchFieldDelegate
+
+    /// Pin the chrome open while the user is editing the search field, so the
+    /// hover-reveal can't fade the toolbar out from under them mid-search.
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        chromeController?.pin(Self.searchPinReason)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        chromeController?.unpin(Self.searchPinReason)
+    }
+
     @objc private func searchFieldDidChange(_ sender: NSSearchField) {
         // Coalesce per-keystroke finds — running the full DOM rewrite + JS
         // round-trip on every char is the dominant stall source on big docs.
@@ -302,7 +407,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
         // debounce so the user navigates the freshest results.
         pendingFindWork?.cancel()
         pendingFindWork = nil
-        (window.contentViewController as? MainSplitViewController)?
+        (window.contentViewController as? ContainerViewController)?.splitViewController
             .find(query, backwards: backwards, mode: searchMode) { [weak self] result in
                 self?.applyFindResult(result, query: query)
             }
@@ -401,6 +506,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
 
     private func focusToolbarSearch() {
         guard let searchField else { return }
+        // Reveal the chrome BEFORE focusing — otherwise ⌘F focuses an
+        // invisible field and the user sees nothing happen. The pin gets
+        // released by controlTextDidEndEditing(_:) when focus moves away.
+        chromeController?.pin(Self.searchPinReason)
         window.makeFirstResponder(searchField)
         searchField.selectText(nil)
     }
@@ -711,7 +820,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
         updateAccessBanner(visible: needsBanner,
                            folderName: fileURL.deletingLastPathComponent().lastPathComponent)
 
-        (window.contentViewController as? MainSplitViewController)?
+        (window.contentViewController as? ContainerViewController)?.splitViewController
             .display(markdown: text,
                      fileName: fileURL.lastPathComponent,
                      url: fileURL,
@@ -747,6 +856,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSSharing
         }
         if accessory.isHidden == visible {
             accessory.isHidden = !visible
+        }
+        // The banner lives in the title bar accessory area, so keep the chrome
+        // pinned open while it's showing — otherwise the banner only appears
+        // when the user happens to hover near the top.
+        if visible {
+            chromeController?.pin(Self.bannerPinReason)
+        } else {
+            chromeController?.unpin(Self.bannerPinReason)
         }
     }
 
