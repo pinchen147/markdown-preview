@@ -60,6 +60,7 @@ class AppDelegate: NSObject,
     private var accessBanner: MissingFolderAccessBanner?
     private var accessBannerAccessory: NSTitlebarAccessoryViewController?
     private var chromeController: WindowChromeController?
+    private var fileDropController: FileDropController?
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
@@ -71,7 +72,7 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-        window.contentViewController = MainSplitViewController()
+        window.contentViewController = ContainerViewController()
         window.setContentSize(NSSize(width: 1100, height: 720))
         window.center()
         window.setFrameAutosaveName("MainWindow")
@@ -88,6 +89,10 @@ class AppDelegate: NSObject,
 
         installAccessBanner()
         chromeController = WindowChromeController(window: window)
+
+        let drop = FileDropController(window: window)
+        drop.onDropFile = { [weak self] url in self?.present(url: url) }
+        fileDropController = drop
 
         hasLaunched = true
 
@@ -304,7 +309,7 @@ class AppDelegate: NSObject,
     }
 
     @objc private func toggleInspectorAction(_ sender: Any) {
-        let isVisible = (window.contentViewController as? MainSplitViewController)?
+        let isVisible = (window.contentViewController as? ContainerViewController)?.splitViewController
             .toggleInspector() ?? false
         setInspectorToggleSelected(isVisible)
     }
@@ -320,7 +325,7 @@ class AppDelegate: NSObject,
     /// way `toggleSidebar:` does automatically via NSSplitViewController.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleInspector(_:)) {
-            let visible = (window.contentViewController as? MainSplitViewController)?
+            let visible = (window.contentViewController as? ContainerViewController)?.splitViewController
                 .isInspectorVisible ?? false
             menuItem.title = visible ? "Hide Inspector" : "Show Inspector"
             return true
@@ -329,7 +334,7 @@ class AppDelegate: NSObject,
     }
 
     private func refreshInspectorToggleItem() {
-        let isVisible = (window.contentViewController as? MainSplitViewController)?
+        let isVisible = (window.contentViewController as? ContainerViewController)?.splitViewController
             .isInspectorVisible ?? false
         setInspectorToggleSelected(isVisible)
     }
@@ -371,7 +376,7 @@ class AppDelegate: NSObject,
     }
 
     @objc private func searchFieldDidChange(_ sender: NSSearchField) {
-        (window.contentViewController as? MainSplitViewController)?
+        (window.contentViewController as? ContainerViewController)?.splitViewController
             .find(sender.stringValue)
     }
 
@@ -403,7 +408,7 @@ class AppDelegate: NSObject,
             focusToolbarSearch()
             return
         }
-        (window.contentViewController as? MainSplitViewController)?
+        (window.contentViewController as? ContainerViewController)?.splitViewController
             .find(query, backwards: backwards)
     }
 
@@ -723,7 +728,7 @@ class AppDelegate: NSObject,
         updateAccessBanner(visible: needsBanner,
                            folderName: fileURL.deletingLastPathComponent().lastPathComponent)
 
-        (window.contentViewController as? MainSplitViewController)?
+        (window.contentViewController as? ContainerViewController)?.splitViewController
             .display(markdown: text,
                      fileName: fileURL.lastPathComponent,
                      url: fileURL,

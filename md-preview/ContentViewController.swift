@@ -19,6 +19,12 @@ final class ContentViewController: NSViewController {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        // Don't let AppKit reflow the document when the toolbar's visibility
+        // toggles. With `.fullSizeContentView`, the toolbar should overlay the
+        // markdown (matching PageFlow's `.ignoresSafeArea`); auto-insets push
+        // the content down by the toolbar height every time we hover-reveal.
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets()
 
         let documentView = FlippedDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false

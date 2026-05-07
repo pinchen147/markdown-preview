@@ -16,8 +16,16 @@ final class WindowChromeController: NSObject {
     /// bar down to any toolbar item without re-triggering exit.
     static let hoverZoneHeight: CGFloat = 52
 
+    /// Height of the title-bar drag strip. Matches the hover zone so the
+    /// entire chrome area drags the window — empty space, between toolbar
+    /// pills, anywhere up there. Toolbar items still take click priority
+    /// because they live in the title-bar layer (above contentView), and
+    /// the drop overlay still routes drags via its registered drag types.
+    static let dragZoneHeight: CGFloat = 52
+
     private weak var window: NSWindow?
     private let hoverTracker = HoverTrackingView()
+    private let windowDragArea = WindowDragView()
 
     /// Multiple independent reasons can pin the chrome open at once (access
     /// banner, search-field focus, etc.). The chrome reveals when any pin is
@@ -110,7 +118,8 @@ final class WindowChromeController: NSObject {
 
         // Tracking strip sits above all content so it always sees mouse moves
         // within the top zone, even over child controls. Hit testing is
-        // disabled so it never swallows clicks.
+        // disabled so it never swallows clicks. Tracking-area events fire
+        // regardless of hit testing, so this still detects hover correctly.
         hoverTracker.translatesAutoresizingMaskIntoConstraints = false
         hoverTracker.onHoverChange = { [weak self] hovering in
             self?.isHovering = hovering
@@ -121,6 +130,19 @@ final class WindowChromeController: NSObject {
             hoverTracker.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             hoverTracker.topAnchor.constraint(equalTo: contentView.topAnchor),
             hoverTracker.heightAnchor.constraint(equalToConstant: Self.hoverZoneHeight)
+        ])
+
+        // With `automaticallyAdjustsContentInsets = false`, the document view
+        // extends right under the title bar and swallows mouse-down events
+        // there. Sit a transparent drag strip on top so the user can still
+        // drag the window from the title bar area, like PageFlow does.
+        windowDragArea.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(windowDragArea, positioned: .above, relativeTo: hoverTracker)
+        NSLayoutConstraint.activate([
+            windowDragArea.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            windowDragArea.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            windowDragArea.topAnchor.constraint(equalTo: contentView.topAnchor),
+            windowDragArea.heightAnchor.constraint(equalToConstant: Self.dragZoneHeight)
         ])
     }
 
@@ -136,6 +158,25 @@ final class WindowChromeController: NSObject {
         // Toolbar isVisible toggling re-shows the system buttons; re-hide on
         // the next runloop tick after AppKit has re-laid-out the title bar.
         DispatchQueue.main.async { [weak self] in self?.hideSystemButtons() }
+    }
+}
+
+// MARK: - WindowDragView
+
+/// Transparent strip at the top of the window that explicitly drives the
+/// window drag via `NSWindow.performDrag(with:)`. Restores the title-bar
+/// drag affordance that's lost when content extends under the toolbar (no
+/// auto content insets). Same role as PageFlow's `WindowDragArea`.
+///
+/// `mouseDownCanMoveWindow` is a heuristic AppKit checks before forwarding a
+/// drag — but it's ignored when any ancestor (e.g. `NSScrollView` /
+/// `WKWebView`) registers gesture recognizers for clicks. `performDrag` is
+/// the explicit Apple API that always works.
+private final class WindowDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
     }
 }
 
